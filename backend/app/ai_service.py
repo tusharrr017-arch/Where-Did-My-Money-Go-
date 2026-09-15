@@ -2,9 +2,20 @@ import json
 import os
 
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import APIStatusError, OpenAI
 
 load_dotenv()
+
+AI_QUOTA_EXCEEDED_MESSAGE = (
+    "AI normalization is temporarily unavailable because the AI usage "
+    "limit has been reached."
+)
+
+
+class AIQuotaExceededError(Exception):
+    def __init__(self, message: str = AI_QUOTA_EXCEEDED_MESSAGE) -> None:
+        super().__init__(message)
+        self.message = message
 
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
@@ -24,18 +35,23 @@ CATEGORIES = [
 ]
 
 
-def ask_llm(prompt: str) -> str:
-    response = client.chat.completions.create(
-        model="openai/gpt-4.1-mini",
-        messages=[
-            {
-                "role": "user",
-                "content": prompt,
-            }
-        ],
-        max_tokens=2000,
-        response_format={"type": "json_object"},
-    )
+def ask_llm(prompt: str, max_tokens: int = 1000) -> str:
+    try:
+        response = client.chat.completions.create(
+            model="openai/gpt-4.1-mini",
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            max_tokens=max_tokens,
+            response_format={"type": "json_object"},
+        )
+    except APIStatusError as error:
+        if error.status_code == 402:
+            raise AIQuotaExceededError() from error
+        raise
 
     return response.choices[0].message.content or ""
 
@@ -208,7 +224,7 @@ YOU MUST RETURN EXACTLY {len(transactions)} OBJECTS
 inside the transactions array.
 """
     
-    raw_response = ask_llm(prompt)
+    raw_response = ask_llm(prompt, max_tokens=1000)
 
     raw_response = raw_response.strip()
 

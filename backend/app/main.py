@@ -21,6 +21,7 @@ from app.auth import (
     verify_password,
 )
 from app.ai_service import (
+    AIQuotaExceededError,
     ask_llm,
     categorize_transaction,
     normalize_transactions_batch,
@@ -348,7 +349,10 @@ async def normalize_document_transactions(
             "transactions": [],
         }
 
-    normalized_transactions = apply_ai_to_rows(transactions)
+    try:
+        normalized_transactions = apply_ai_to_rows(transactions)
+    except AIQuotaExceededError as error:
+        raise http_error(503, error.message)
     return {
         "filename": file.filename,
         "count": len(normalized_transactions),
@@ -380,6 +384,8 @@ async def preview_document(file: UploadFile = File(...)):
         }
     except ValueError as error:
         raise http_error(400, str(error))
+    except AIQuotaExceededError as error:
+        raise http_error(503, error.message)
     except Exception:
         traceback.print_exc()
         raise http_error(500, "Could not process that statement.")
@@ -423,6 +429,8 @@ async def import_document(
         }
     except ValueError as error:
         raise http_error(400, str(error))
+    except AIQuotaExceededError as error:
+        raise http_error(503, error.message)
     except Exception:
         traceback.print_exc()
         raise http_error(500, "Could not import that statement.")
