@@ -26,11 +26,15 @@ from app.ai_service import (
     categorize_transaction,
     normalize_transactions_batch,
 )
-from app.services.normalization.service import parse_statement_transactions
+from app.services.normalization.service import (
+    parse_statement_file,
+    parse_statement_transactions,
+)
 from app.services.extraction.service import extract_document
 from app.statement import (
     apply_ai_to_rows,
     parse_uploaded_statement,
+    parse_uploaded_statement_result,
     serialize_parsed,
     validate_upload,
 )
@@ -319,15 +323,15 @@ async def parse_document_transactions(
     user: User = Depends(get_current_user),
 ):
     contents = await file.read()
-    extracted_text = extract_document(
-        filename=file.filename,
-        contents=contents,
-    )
-    transactions = parse_statement_transactions(extracted_text)
+    parsed = parse_statement_file(file.filename or "statement.txt", contents)
     return {
         "filename": file.filename,
-        "count": len(transactions),
-        "transactions": transactions,
+        "count": parsed["detected"],
+        "detected": parsed["detected"],
+        "ignored": parsed["ignored"],
+        "review": parsed["review"],
+        "parser": parsed["parser"],
+        "transactions": parsed["transactions"],
     }
 
 
@@ -369,17 +373,24 @@ async def preview_document(file: UploadFile = File(...)):
     contents = await file.read()
     try:
         filename = validate_upload(file.filename, contents)
-        parsed = parse_uploaded_statement(filename, contents)
+        parsed_result = parse_uploaded_statement_result(filename, contents)
+        parsed = parsed_result.transactions
         if not parsed:
             return {
                 "filename": filename,
                 "count": 0,
+                "detected": 0,
+                "ignored": parsed_result.ignored,
+                "review": parsed_result.review,
                 "transactions": [],
             }
         normalized = apply_ai_to_rows(parsed)
         return {
             "filename": filename,
             "count": len(normalized),
+            "detected": parsed_result.detected,
+            "ignored": parsed_result.ignored,
+            "review": parsed_result.review,
             "transactions": [serialize_parsed(row) for row in normalized],
         }
     except ValueError as error:
@@ -399,7 +410,8 @@ async def import_document(
     contents = await file.read()
     try:
         filename = validate_upload(file.filename, contents)
-        parsed = parse_uploaded_statement(filename, contents)
+        parsed_result = parse_uploaded_statement_result(filename, contents)
+        parsed = parsed_result.transactions
         if not parsed:
             return {
                 "message": "No transactions found in the document.",
@@ -408,6 +420,9 @@ async def import_document(
                 "imported": 0,
                 "duplicates": 0,
                 "total_found": 0,
+                "detected": 0,
+                "ignored": parsed_result.ignored,
+                "review": parsed_result.review,
             }
 
         with SessionLocal() as db:
@@ -426,6 +441,9 @@ async def import_document(
             "imported": imported,
             "duplicates": duplicates,
             "total_found": len(parsed),
+            "detected": parsed_result.detected,
+            "ignored": parsed_result.ignored,
+            "review": parsed_result.review,
         }
     except ValueError as error:
         raise http_error(400, str(error))

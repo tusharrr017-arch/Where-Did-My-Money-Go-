@@ -1,49 +1,21 @@
-import re
-from datetime import datetime
+from __future__ import annotations
 
-
-TRANSACTION_PATTERN = re.compile(
-    r"^(\d{2}\s+[A-Za-z]{3}\s+\d{2})\s+(.+?)\s+([\d,]+\.\d{2})\s+([CD])$"
-)
+from app.services.ingestion.pipeline import parse_document
+from app.services.ingestion.text_parser import parse_text_lines
+from app.services.ingestion.validators import candidate_to_dict
 
 
 def parse_statement_transactions(text: str) -> list[dict]:
-    transactions = []
+    candidates, _, _ = parse_text_lines(text.splitlines())
+    return [candidate_to_dict(candidate) for candidate in candidates]
 
-    for line in text.splitlines():
-        line = line.strip()
 
-        if not line:
-            continue
-
-        match = TRANSACTION_PATTERN.match(line)
-
-        if not match:
-            continue
-
-        date_text, description, amount_text, transaction_code = match.groups()
-
-        transaction_date = datetime.strptime(
-            date_text,
-            "%d %b %y"
-        ).date()
-
-        amount = float(amount_text.replace(",", ""))
-
-        transaction_type = (
-            "DEBIT"
-            if transaction_code == "D"
-            else "CREDIT"
-        )
-
-        transactions.append(
-            {
-                "date": transaction_date,
-                "merchant": description.strip(),
-                "amount": amount,
-                "transaction_type": transaction_type,
-                "description": description.strip(),
-            }
-        )
-
-    return transactions
+def parse_statement_file(filename: str, contents: bytes) -> dict:
+    result = parse_document(filename, contents)
+    return {
+        "transactions": result.transactions,
+        "detected": result.detected,
+        "ignored": result.ignored,
+        "review": result.review,
+        "parser": result.parser,
+    }

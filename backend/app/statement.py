@@ -2,8 +2,7 @@ from datetime import date
 from typing import Any
 
 from app.ai_service import normalize_transactions_batch
-from app.services.extraction.service import extract_document
-from app.services.normalization.service import parse_statement_transactions
+from app.services.ingestion.pipeline import IngestionResult, parse_document
 from app.services.duplicates import generate_transaction_fingerprint
 
 
@@ -33,17 +32,23 @@ def validate_upload(filename: str | None, contents: bytes) -> str:
 
 
 def parse_uploaded_statement(filename: str, contents: bytes) -> list[dict[str, Any]]:
-    extracted_text = extract_document(filename, contents)
-    transactions = parse_statement_transactions(extracted_text)
+    return parse_uploaded_statement_result(filename, contents).transactions
 
-    for original in transactions:
+
+def parse_uploaded_statement_result(
+    filename: str,
+    contents: bytes,
+) -> IngestionResult:
+    result = parse_document(filename, contents)
+
+    for original in result.transactions:
         original["transaction_fingerprint"] = generate_transaction_fingerprint(
             original
         )
         if isinstance(original.get("date"), date):
             original["date"] = original["date"]
 
-    return transactions
+    return result
 
 
 def apply_ai_to_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
