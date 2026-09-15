@@ -1,0 +1,14 @@
+@import "tailwindcss";
+
+@theme {
+  --animate-progress-slide: progress-slide 1.2s ease-in-out infinite;
+}
+
+@keyframes progress-slide {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(420%);
+  }
+}
