@@ -415,7 +415,10 @@ function App() {
     }
   };
 
-  const handleMonthChange = async (value: string) => {
+  const handleMonthChange = async (value: string | null) => {
+    if (!value) {
+      return;
+    }
     const month = Number(value);
     setSelectedMonth(month);
     setSearch("");
@@ -744,7 +747,7 @@ function App() {
                     className="h-10 w-full rounded-md border bg-white pl-9 pr-3 text-sm outline-none focus:ring-2"
                   />
                 </div>
-                <Select value={categoryFilter} onValueChange={(value) => { setCategoryFilter(value); setCurrentPage(1); }}>
+                <Select value={categoryFilter} onValueChange={(value) => { if (!value) return; setCategoryFilter(value); setCurrentPage(1); }}>
                   <SelectTrigger className="w-full bg-white"><SelectValue /></SelectTrigger>
                   <SelectContent className="z-[9999] min-w-[200px] bg-white text-black shadow-lg">
                     <SelectItem value="ALL">All Categories</SelectItem>
@@ -753,7 +756,7 @@ function App() {
                     ))}
                   </SelectContent>
                 </Select>
-                <Select value={typeFilter} onValueChange={(value) => { setTypeFilter(value); setCurrentPage(1); }}>
+                <Select value={typeFilter} onValueChange={(value) => { if (!value) return; setTypeFilter(value); setCurrentPage(1); }}>
                   <SelectTrigger className="w-full bg-white"><SelectValue /></SelectTrigger>
                   <SelectContent className="z-[9999] min-w-[180px] bg-white text-black shadow-lg">
                     <SelectItem value="ALL">All Types</SelectItem>
@@ -761,7 +764,7 @@ function App() {
                     <SelectItem value="CREDIT">Credit</SelectItem>
                   </SelectContent>
                 </Select>
-                <Select value={sortBy} onValueChange={(value) => { setSortBy(value); setCurrentPage(1); }}>
+                <Select value={sortBy} onValueChange={(value) => { if (!value) return; setSortBy(value); setCurrentPage(1); }}>
                   <SelectTrigger className="w-full bg-white"><SelectValue /></SelectTrigger>
                   <SelectContent className="z-[9999] min-w-[200px] bg-white text-black shadow-lg">
                     <SelectItem value="DATE_DESC">Newest First</SelectItem>
