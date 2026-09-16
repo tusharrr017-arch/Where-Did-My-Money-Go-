@@ -1,5 +1,6 @@
 import json
 import os
+import time
 
 from dotenv import load_dotenv
 from openai import APIStatusError, OpenAI
@@ -10,6 +11,12 @@ AI_QUOTA_EXCEEDED_MESSAGE = (
     "AI normalization is temporarily unavailable because the AI usage "
     "limit has been reached."
 )
+AI_RATE_LIMIT_MESSAGE = (
+    "AI normalization is temporarily busy because the free model is "
+    "rate-limited. Please wait a minute and try again."
+)
+OPENROUTER_MAX_RETRIES = max(1, int(os.getenv("OPENROUTER_MAX_RETRIES", "4")))
+OPENROUTER_RETRY_SECONDS = float(os.getenv("OPENROUTER_RETRY_SECONDS", "2"))
 
 
 class AIQuotaExceededError(Exception):
@@ -17,10 +24,37 @@ class AIQuotaExceededError(Exception):
         super().__init__(message)
         self.message = message
 
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=os.getenv("OPENROUTER_API_KEY"),
-)
+
+DEFAULT_OPENROUTER_MODEL = "google/gemma-4-31b-it:free"
+
+
+def _ai_config() -> tuple[OpenAI, str]:
+    openrouter_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    if not openrouter_key:
+        raise ValueError("Set OPENROUTER_API_KEY in the environment.")
+
+    model = os.getenv("OPENROUTER_MODEL", DEFAULT_OPENROUTER_MODEL).strip()
+    return (
+        OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=openrouter_key,
+        ),
+        model or DEFAULT_OPENROUTER_MODEL,
+    )
+
+
+def _supports_json_mode(model: str) -> bool:
+    return ":free" not in model.lower()
+
+
+def _clean_json_response(raw: str) -> str:
+    raw = raw.strip()
+    if raw.startswith("```"):
+        raw = raw.replace("```json", "").replace("```", "").strip()
+    return raw
+
+
+client, AI_MODEL = _ai_config()
 
 CATEGORIES = [
     "Food",
@@ -34,26 +68,113 @@ CATEGORIES = [
     "Other",
 ]
 
+_CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "Food": ("swiggy", "zomato", "restaurant", "cafe", "food", "dominos", "mcdonald"),
+    "Transport": ("uber", "ola", "metro", "fuel", "petrol", "parking", "irctc", "rapido"),
+    "Shopping": ("amazon", "flipkart", "myntra", "mart", "store", "shop"),
+    "Entertainment": ("netflix", "spotify", "movie", "cinema", "game"),
+    "Subscriptions": ("subscription", "renewal", "membership"),
+    "Bills": ("electric", "water", "gas", "broadband", "mobile", "recharge", "bill"),
+    "Healthcare": ("pharmacy", "medical", "hospital", "clinic", "apollo"),
+    "Travel": ("hotel", "flight", "airline", "booking", "makemytrip"),
+}
 
-def ask_llm(prompt: str, max_tokens: int = 1000) -> str:
-    try:
-        response = client.chat.completions.create(
-            model="openai/gpt-4.1-mini",
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
-            max_tokens=max_tokens,
-            response_format={"type": "json_object"},
+
+def _guess_category(merchant: str, description: str) -> str:
+    text = f"{merchant} {description}".lower()
+    for category, keywords in _CATEGORY_KEYWORDS.items():
+        if any(keyword in text for keyword in keywords):
+            return category
+    return "Other"
+
+
+def _guess_economic_type(transaction: dict) -> str:
+    description = (transaction.get("description") or "").upper()
+    if any(
+        keyword in description
+        for keyword in ("PAYMENT RECEIVED", "CARD PAYMENT", "BILL PAYMENT")
+    ):
+        return "PAYMENT"
+    if any(
+        keyword in description
+        for keyword in ("REFUND", "REVERSAL", "CASHBACK", "SURCHARGE WAIVER")
+    ):
+        return "REFUND"
+    if any(keyword in description for keyword in ("SALARY", "WAGE", "PAYROLL")):
+        return "INCOME"
+    if any(keyword in description for keyword in ("FEE", "CHARGE", "PENALTY")):
+        return "FEE"
+    if "INTEREST" in description:
+        return "INTEREST"
+    if transaction.get("transaction_type") == "CREDIT":
+        return "OTHER"
+    return "PURCHASE"
+
+
+def fallback_normalize_batch(transactions: list[dict]) -> list[dict]:
+    normalized: list[dict] = []
+    for index, transaction in enumerate(transactions):
+        description = transaction.get("description") or ""
+        normalized.append(
+            {
+                "index": index,
+                "merchant": transaction.get("merchant") or "Unknown",
+                "category": _guess_category(
+                    str(transaction.get("merchant") or ""),
+                    str(description),
+                ),
+                "transaction_type": _guess_economic_type(transaction),
+                "confidence": 0.35,
+                "reason": "Basic keyword categorization while AI is unavailable.",
+            }
         )
-    except APIStatusError as error:
-        if error.status_code == 402:
-            raise AIQuotaExceededError() from error
-        raise
+    return normalized
 
-    return response.choices[0].message.content or ""
+
+def _is_credit_limit_error(error: APIStatusError) -> bool:
+    err_text = str(error).lower()
+    return "insufficient" in err_text or "credit" in err_text
+
+
+def _is_rate_limit_error(error: APIStatusError) -> bool:
+    return error.status_code == 429 and not _is_credit_limit_error(error)
+
+
+def ask_llm(prompt: str, max_tokens: int = 600) -> str:
+    request_kwargs: dict = {
+        "model": AI_MODEL,
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        ],
+        "max_tokens": max_tokens,
+    }
+    if _supports_json_mode(AI_MODEL):
+        request_kwargs["response_format"] = {"type": "json_object"}
+
+    last_error: APIStatusError | None = None
+    for attempt in range(OPENROUTER_MAX_RETRIES):
+        try:
+            response = client.chat.completions.create(**request_kwargs)
+            return _clean_json_response(response.choices[0].message.content or "")
+        except APIStatusError as error:
+            last_error = error
+            if error.status_code == 402:
+                raise AIQuotaExceededError() from error
+            if _is_credit_limit_error(error):
+                raise AIQuotaExceededError() from error
+            if _is_rate_limit_error(error) and attempt < OPENROUTER_MAX_RETRIES - 1:
+                time.sleep(OPENROUTER_RETRY_SECONDS * (2**attempt))
+                continue
+            if _is_rate_limit_error(error):
+                raise AIQuotaExceededError(AI_RATE_LIMIT_MESSAGE) from error
+            raise
+
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("OpenRouter request failed without a response.")
 
 
 def categorize_transaction(
@@ -88,7 +209,7 @@ Rules:
 - keep the reason concise
 """
 
-    raw_response = ask_llm(prompt)
+    raw_response = ask_llm(prompt, max_tokens=200)
 
     result = json.loads(raw_response)
 
@@ -224,7 +345,7 @@ YOU MUST RETURN EXACTLY {len(transactions)} OBJECTS
 inside the transactions array.
 """
     
-    raw_response = ask_llm(prompt, max_tokens=1000)
+    raw_response = ask_llm(prompt, max_tokens=700)
 
     raw_response = raw_response.strip()
 

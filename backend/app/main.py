@@ -181,7 +181,7 @@ def import_preview_transactions(
 ):
     incoming = [item.model_dump() for item in payload.transactions]
     with SessionLocal() as db:
-        imported, duplicates = persist.save_transactions_for_user(
+        imported, duplicates, _ = persist.save_transactions_for_user(
             db,
             user.id,
             incoming,
@@ -222,7 +222,7 @@ async def import_transactions(
         )
 
     with SessionLocal() as db:
-        imported, duplicates = persist.save_transactions_for_user(
+        imported, duplicates, _ = persist.save_transactions_for_user(
             db,
             user.id,
             incoming,
@@ -353,13 +353,11 @@ async def normalize_document_transactions(
             "transactions": [],
         }
 
-    try:
-        normalized_transactions = apply_ai_to_rows(transactions)
-    except AIQuotaExceededError as error:
-        raise http_error(503, error.message)
+    normalized_transactions, ai_fallback = apply_ai_to_rows(transactions)
     return {
         "filename": file.filename,
         "count": len(normalized_transactions),
+        "ai_fallback": ai_fallback,
         "transactions": normalized_transactions,
     }
 
@@ -384,19 +382,18 @@ async def preview_document(file: UploadFile = File(...)):
                 "review": parsed_result.review,
                 "transactions": [],
             }
-        normalized = apply_ai_to_rows(parsed)
+        normalized, ai_fallback = apply_ai_to_rows(parsed)
         return {
             "filename": filename,
             "count": len(normalized),
             "detected": parsed_result.detected,
             "ignored": parsed_result.ignored,
             "review": parsed_result.review,
+            "ai_fallback": ai_fallback,
             "transactions": [serialize_parsed(row) for row in normalized],
         }
     except ValueError as error:
         raise http_error(400, str(error))
-    except AIQuotaExceededError as error:
-        raise http_error(503, error.message)
     except Exception:
         traceback.print_exc()
         raise http_error(500, "Could not process that statement.")
@@ -426,7 +423,7 @@ async def import_document(
             }
 
         with SessionLocal() as db:
-            imported, duplicates = persist.save_transactions_for_user(
+            imported, duplicates, ai_fallback = persist.save_transactions_for_user(
                 db,
                 user.id,
                 parsed,
@@ -434,8 +431,15 @@ async def import_document(
                 already_normalized=False,
             )
 
+        message = "Document processed successfully."
+        if ai_fallback:
+            message = (
+                "Document imported with basic categorization because the free "
+                "AI model is temporarily rate-limited."
+            )
+
         return {
-            "message": "Document processed successfully.",
+            "message": message,
             "filename": filename,
             "count": imported,
             "imported": imported,
@@ -444,11 +448,10 @@ async def import_document(
             "detected": parsed_result.detected,
             "ignored": parsed_result.ignored,
             "review": parsed_result.review,
+            "ai_fallback": ai_fallback,
         }
     except ValueError as error:
         raise http_error(400, str(error))
-    except AIQuotaExceededError as error:
-        raise http_error(503, error.message)
     except Exception:
         traceback.print_exc()
         raise http_error(500, "Could not import that statement.")
@@ -557,24 +560,22 @@ Rules:
 - Do not treat card payments as spending.
 """
 
-    raw_response = ask_llm(prompt)
     try:
+        raw_response = ask_llm(prompt)
         result = json.loads(raw_response)
-    except json.JSONDecodeError:
-        raise http_error(502, "AI returned invalid JSON.")
-
-    if not isinstance(result, dict):
-        raise http_error(502, "AI response must be a JSON object.")
-
-    insights = result.get("insights")
-    if not isinstance(insights, list):
-        insights = []
-
-    return {
-        "summary": str(result.get("summary") or ""),
-        "insights": [str(item) for item in insights],
-        "recommendation": str(result.get("recommendation") or ""),
-    }
+        if not isinstance(result, dict):
+            raise ValueError("AI response must be a JSON object.")
+        insights = result.get("insights")
+        if not isinstance(insights, list):
+            insights = []
+        return {
+            "summary": str(result.get("summary") or ""),
+            "insights": [str(item) for item in insights],
+            "recommendation": str(result.get("recommendation") or ""),
+            "ai_fallback": False,
+        }
+    except (AIQuotaExceededError, json.JSONDecodeError, ValueError):
+        return finance.build_fallback_insights(transactions, year, month)
 
 
 @app.post("/assistant/ask")

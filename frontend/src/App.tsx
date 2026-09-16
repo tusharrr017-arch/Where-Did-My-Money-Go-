@@ -340,10 +340,13 @@ function App() {
       if (user) {
         const imported = Number(data.imported ?? data.count ?? 0);
         const duplicates = Number(data.duplicates ?? 0);
+        const fallbackNote = data.ai_fallback
+          ? " Basic categorization was used because AI is temporarily busy."
+          : "";
         setMessage(
           imported === 0 && duplicates > 0
-            ? `No new transactions added. ${duplicates} were already saved.`
-            : `${imported} transactions imported. ${duplicates} duplicates skipped.`,
+            ? `No new transactions added. ${duplicates} were already saved.${fallbackNote}`
+            : `${imported} transactions imported. ${duplicates} duplicates skipped.${fallbackNote}`,
         );
         setScreen("app");
         setTab("dashboard");

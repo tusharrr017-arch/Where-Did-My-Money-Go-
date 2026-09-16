@@ -26,9 +26,9 @@ def save_transactions_for_user(
     incoming: list[dict[str, Any]],
     source_file: str | None,
     already_normalized: bool,
-) -> tuple[int, int]:
+) -> tuple[int, int, bool]:
     if not incoming:
-        return 0, 0
+        return 0, 0, False
 
     for row in incoming:
         if not row.get("transaction_fingerprint"):
@@ -63,12 +63,13 @@ def save_transactions_for_user(
 
     if not new_rows:
         db.commit()
-        return 0, duplicate_count
+        return 0, duplicate_count, False
 
+    ai_fallback = False
     if already_normalized:
         rows_to_insert = new_rows
     else:
-        rows_to_insert = apply_ai_to_rows(new_rows)
+        rows_to_insert, ai_fallback = apply_ai_to_rows(new_rows)
 
     pending = [
         row["transaction_fingerprint"]
@@ -124,4 +125,4 @@ def save_transactions_for_user(
         imported_count += 1
 
     db.commit()
-    return imported_count, duplicate_count
+    return imported_count, duplicate_count, ai_fallback

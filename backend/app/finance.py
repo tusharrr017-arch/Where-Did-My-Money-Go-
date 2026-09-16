@@ -389,6 +389,63 @@ def general_summary(db: Session, user_id: int) -> dict:
     }
 
 
+def build_fallback_insights(rows: list[Any], year: int, month: int) -> dict:
+    spending_rows = [row for row in rows if is_spending(row)]
+    total_spending = sum_spending(rows)
+    income = round(
+        sum(
+            float(row.amount if not isinstance(row, dict) else row["amount"])
+            for row in rows
+            if (row.transaction_type if not isinstance(row, dict) else row["transaction_type"])
+            == "CREDIT"
+            and (row.economic_type if not isinstance(row, dict) else row["economic_type"])
+            == "INCOME"
+        ),
+        2,
+    )
+
+    category_totals: dict[str, float] = {}
+    for row in spending_rows:
+        category = row.category if not isinstance(row, dict) else row["category"]
+        amount = float(row.amount if not isinstance(row, dict) else row["amount"])
+        category_totals[category or "Other"] = category_totals.get(category or "Other", 0) + amount
+
+    top_category = max(category_totals, key=category_totals.get) if category_totals else None
+    insights: list[str] = []
+    if top_category:
+        insights.append(
+            f"Your top spending category was {top_category} "
+            f"at ₹{category_totals[top_category]:.0f}."
+        )
+    if income > 0:
+        insights.append(f"Recorded income this month: ₹{income:.0f}.")
+    if len(spending_rows) > 0:
+        avg = total_spending / len(spending_rows)
+        insights.append(
+            f"You logged {len(spending_rows)} spending transactions "
+            f"with an average of ₹{avg:.0f}."
+        )
+    if not insights:
+        insights.append("Add more transactions to unlock richer spending insights.")
+
+    summary = (
+        f"In {year}-{month:02d}, you had {len(rows)} transactions with "
+        f"₹{total_spending:.0f} in tracked spending."
+    )
+    recommendation = (
+        f"Review {top_category} spending first."
+        if top_category
+        else "Import a full statement to get personalized recommendations."
+    )
+
+    return {
+        "summary": summary,
+        "insights": insights[:3],
+        "recommendation": recommendation,
+        "ai_fallback": True,
+    }
+
+
 def current_month_from_data(db: Session, user_id: int) -> tuple[int, int]:
     latest = db.execute(
         select(Transaction.date)
